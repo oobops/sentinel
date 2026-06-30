@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel"
+version = "0.1.0"
+description = "Sentinel — an out-of-band boundary probe (verifier, not enforcer) for the Evil Resident enclave."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "ross-dev75" }]
+keywords = ["security", "verifier", "egress", "guardrail", "probe", "zero-trust"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+# Zero runtime dependencies: the runtime package is standard-library only by design.
+dependencies = []
+
+[project.optional-dependencies]
+# Dev/test only. Never required to run the probe.
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+sentinel = "sentinel.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/ross-dev75/sentinel"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

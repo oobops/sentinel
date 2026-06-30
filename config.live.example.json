@@ -1,0 +1,9 @@
+{
+  "_comment": "EXAMPLE live configuration (schema v1). Points at a REAL Evil Resident target. The Live implementations are written-but-unexercised; this file is never used by the test suite. Copy to config.local.json (gitignored), fill in real values. egress_targets must be explicit host:port (no wildcards/CIDR); model_endpoint is REQUIRED in live mode.",
+  "version": 1,
+  "mode": "live",
+  "egress_targets": [
+    "known-bad.example.com:443"
+  ],
+  "model_endpoint": "https://REPLACE-ME.internal.example/generate"
+}

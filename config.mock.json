@@ -1,0 +1,9 @@
+{
+  "_comment": "Mock configuration (schema v1). Selects deterministic in-process Mock implementations; runs green with zero external dependencies. egress_targets are simulated destinations the MockEgressChecker treats as sealed (blocked) by default.",
+  "version": 1,
+  "mode": "mock",
+  "egress_targets": [
+    "malicious.example.com:443",
+    "exfil.example.net:80"
+  ]
+}

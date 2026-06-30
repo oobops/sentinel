@@ -9,7 +9,7 @@ description = "Sentinel — an out-of-band boundary probe (verifier, not enforce
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "ross-dev75" }]
+authors = [{ name = "oobops" }]
 keywords = ["security", "verifier", "egress", "guardrail", "probe", "zero-trust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -29,7 +29,7 @@ dev = ["pytest>=7.0"]
 sentinel = "sentinel.__main__:main"
 
 [project.urls]
-Repository = "https://github.com/ross-dev75/sentinel"
+Repository = "https://github.com/oobops/sentinel"
 
 [tool.setuptools.packages.find]
 where = ["src"]

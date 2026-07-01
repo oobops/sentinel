@@ -2,7 +2,7 @@
 
 Sentinel is an out-of-band boundary probe for the **Faraday** enclave — a
 Terraform-defined, zero-trust environment (a locked-down VPC)
-that hosts a simluated open-source LLM with customized weights and tuning.
+that hosts an open-source LLM with customized weights and tuning.
 
 **Sentinel is a verifier, not an enforcer.** It runs periodically from *outside*
 the enclave and checks whether security controls hold. It is never in the live

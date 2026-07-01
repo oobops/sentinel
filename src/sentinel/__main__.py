@@ -31,12 +31,22 @@ def _render_text(report) -> None:
     status = "PASS" if report.passed else "FAIL"
     print(f"Sentinel probe report  [mode={report.mode}]  =>  {status}")
     print("(verifier, not enforcer — evidence the controls hold, not protection)")
+    if report.mode == "mock":
+        print(
+            "(MOCK — results are SIMULATED in-process; this exercises the logic, "
+            "not a live GCP network or a real model surface)"
+        )
     for chk in report.checks:
         mark = "PASS" if chk.passed else "FAIL"
         print(f"\n[{mark}] {chk.name}  —  {chk.boundary}")
         print(f"       {chk.summary}")
         for t in chk.targets:
-            state = "blocked" if t.blocked else "LEAKED"
+            if t.inconclusive:
+                state = "INCONCLUSIVE"
+            elif t.blocked:
+                state = "blocked"
+            else:
+                state = "LEAKED"
             print(f"         - {t.target}: {state}  ({t.detail})")
         for c in chk.cases:
             state = "ok" if c.ok else "MISMATCH"
@@ -49,7 +59,7 @@ def _render_text(report) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sentinel",
-        description="Out-of-band boundary probe for the Evil Resident enclave "
+        description="Out-of-band boundary probe for self-hosted AI "
         "(verifier, not enforcer).",
     )
     parser.add_argument(

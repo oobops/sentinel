@@ -6,9 +6,11 @@ data path and cannot inspect real traffic in real time.
 
 It reasons about two strictly distinct, independently-failing boundaries:
 
-  - Egress containment (L3/L4): a network boundary enforced elsewhere
-    (Terraform/NAT). Controls *where* data can go. Sentinel probes whether
-    outbound is actually sealed.
+  - Egress containment (L3/L4): a network boundary enforced elsewhere — on
+    Google Cloud, by VPC firewall egress rules, Cloud NAT, and VPC Service
+    Controls (Terraform-defined). Controls *where* data can go. Sentinel probes
+    whether outbound is actually sealed, and reports a target it cannot determine
+    as inconclusive rather than passing it.
 
   - Output guardrail (L7): an in-path content boundary inside the VM that
     controls *what* may leave. This does NOT exist yet and is out of scope for

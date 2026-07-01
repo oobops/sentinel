@@ -1,5 +1,5 @@
 {
-  "_comment": "Mock configuration (schema v1). Selects deterministic in-process Mock implementations; runs green with zero external dependencies. egress_targets are simulated destinations the MockEgressChecker treats as sealed (blocked) by default.",
+  "_comment": "Mock configuration (schema v1). Selects deterministic in-process Mock implementations; runs green with zero external dependencies and touches no network. egress_targets are SIMULATED destinations the MockEgressChecker treats as sealed (blocked) by default — a mock PASS verifies the logic, not a live GCP network. Use config.live.example.json as the template for a real run.",
   "version": 1,
   "mode": "mock",
   "egress_targets": [

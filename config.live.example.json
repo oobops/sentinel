@@ -1,5 +1,5 @@
 {
-  "_comment": "EXAMPLE live configuration (schema v1). Points at a REAL Evil Resident target. The Live implementations are written-but-unexercised; this file is never used by the test suite. Copy to config.local.json (gitignored), fill in real values. egress_targets must be explicit host:port (no wildcards/CIDR); model_endpoint is REQUIRED in live mode.",
+  "_comment": "EXAMPLE live configuration (schema v1) for the Evil Resident enclave on Google Cloud. Run Sentinel from a GCE/GKE workload in the same VPC so its egress attempts face the same VPC firewall / Cloud NAT rules a real escaping process would. The Live implementations are written-but-unexercised; this file is never used by the test suite. Copy to config.local.json (gitignored), fill in real values. egress_targets must be explicit host:port (no wildcards/CIDR). model_endpoint is REQUIRED in live mode and is validated as an authorized destination: it may be an internal GCP host (RFC1918 / Private Service Connect / internal load balancer) but must NOT be the GCP metadata server (169.254.169.254 / metadata.google.internal), loopback, or link-local.",
   "version": 1,
   "mode": "live",
   "egress_targets": [

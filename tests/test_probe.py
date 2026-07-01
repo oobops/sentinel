@@ -1,15 +1,22 @@
-"""Sentinel test suite — comprehensive, MOCK-ONLY, deterministic.
+"""Sentinel test suite — comprehensive, deterministic, NO real network I/O.
 
 Properties this suite upholds:
-  - Mock-only: no test invokes a Live implementation's network methods. Live
-    classes are constructed (to prove the shape) but never probed.
+  - No real network: no test opens a real socket or makes a real HTTP call. The
+    Live implementations are exercised ONLY through injected stdlib fakes
+    (monkeypatched ``socket`` / ``urllib``) to prove their verdict mapping and
+    input handling; they are never pointed at a deployed target.
   - cwd-independent: configs come from tmp_path; committed config files are
     located via __file__, never the working directory.
+
+Deployment target is Google Cloud; the offline fakes stand in for a GCE/GKE
+vantage point and the enclave model surface.
 """
 
 from __future__ import annotations
 
 import json
+import socket as socket_mod
+import urllib.request as urllib_request
 from pathlib import Path
 
 import pytest
@@ -26,6 +33,7 @@ from sentinel.config import (
 from sentinel.guardrail import GuardrailRule, OutputGuardrail
 from sentinel.interfaces import (
     EgressChecker,
+    EgressResult,
     LiveEgressChecker,
     LiveModelClient,
     ModelClient,
@@ -79,10 +87,96 @@ def test_mock_model_mapped_and_default():
     assert mc.generate("unknown") == "DEF"
 
 
-def test_live_classes_construct_but_are_not_probed():
-    # Constructed only — never .attempt()/.generate() (mock-only suite).
+def test_live_classes_construct_cleanly():
+    # Construction touches no network; behavior is exercised below via fakes.
     assert isinstance(LiveEgressChecker(), LiveEgressChecker)
     assert isinstance(LiveModelClient(endpoint="http://x/y"), LiveModelClient)
+
+
+# --------------------------------------------------------------------------- #
+# live paths — verdict mapping / input handling (offline, injected fakes)      #
+# No real socket or HTTP call happens: socket/urllib are monkeypatched.        #
+# --------------------------------------------------------------------------- #
+class _FakeConn:
+    """Stand-in for a successful socket connection context manager."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_live_egress_success_is_leak(monkeypatch):
+    monkeypatch.setattr(socket_mod, "create_connection", lambda *a, **k: _FakeConn())
+    r = LiveEgressChecker().attempt("known-bad.example:443")
+    assert r.blocked is False and r.inconclusive is False  # reachable => LEAK
+
+
+def test_live_egress_timeout_is_contained(monkeypatch):
+    def boom(*a, **k):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(socket_mod, "create_connection", boom)
+    r = LiveEgressChecker().attempt("known-bad.example:443")
+    assert r.blocked is True and r.inconclusive is False  # silent drop => contained
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ConnectionRefusedError("refused"),  # ambiguous RST
+        socket_mod.gaierror("name resolution failed"),  # DNS down / broken probe
+        OSError("network is unreachable"),  # no local route
+    ],
+)
+def test_live_egress_ambiguous_failures_are_inconclusive(monkeypatch, exc):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(socket_mod, "create_connection", boom)
+    r = LiveEgressChecker().attempt("known-bad.example:443")
+    # The critical fix: a non-answer is NEVER reported as "contained".
+    assert r.inconclusive is True and r.blocked is False
+
+
+class _FakeResp:
+    """Stand-in for the urlopen() response context manager."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n: int = -1) -> bytes:
+        return self._data[:n] if n is not None and n >= 0 else self._data
+
+
+def _fake_urlopen(data: bytes):
+    return lambda *a, **k: _FakeResp(data)
+
+
+def test_live_model_happy_path(monkeypatch):
+    monkeypatch.setattr(urllib_request, "urlopen", _fake_urlopen(b'{"output": "hi"}'))
+    assert LiveModelClient(endpoint="https://model.internal/gen").generate("p") == "hi"
+
+
+def test_live_model_rejects_oversize_response(monkeypatch):
+    big = b'{"output": "' + b"x" * (LiveModelClient.MAX_RESPONSE_BYTES + 16) + b'"}'
+    monkeypatch.setattr(urllib_request, "urlopen", _fake_urlopen(big))
+    with pytest.raises(ValueError):
+        LiveModelClient(endpoint="https://model.internal/gen").generate("p")
+
+
+@pytest.mark.parametrize("body", [b'{"output": 123}', b"[1, 2, 3]"])
+def test_live_model_rejects_bad_response_shape(monkeypatch, body):
+    monkeypatch.setattr(urllib_request, "urlopen", _fake_urlopen(body))
+    with pytest.raises(ValueError):
+        LiveModelClient(endpoint="https://model.internal/gen").generate("p")
 
 
 # --------------------------------------------------------------------------- #
@@ -169,11 +263,39 @@ def test_config_live_requires_endpoint():
         {"version": 1, "mode": "mock", "egress_targets": ["h:99999"]},  # bad port
         {"version": 1, "mode": "live"},  # live without endpoint
         {"version": 1, "mode": "live", "model_endpoint": "ftp://x/y"},  # non-http
+        # model_endpoint SSRF / malformed guards (GCP deployment):
+        {"version": 1, "mode": "live",
+         "model_endpoint": "http://169.254.169.254/computeMetadata/v1/"},  # gcp metadata IP
+        {"version": 1, "mode": "live",
+         "model_endpoint": "http://metadata.google.internal/"},  # gcp metadata DNS
+        {"version": 1, "mode": "live",
+         "model_endpoint": "http://127.0.0.1:8080/"},  # loopback
+        {"version": 1, "mode": "live",
+         "model_endpoint": "https://user:pass@host.example/"},  # embedded creds
+        {"version": 1, "mode": "live",
+         "model_endpoint": "https://host.example:0/"},  # port out of range
+        {"version": 1, "mode": "live",
+         "model_endpoint": "https:///no-host"},  # missing host
     ],
 )
 def test_config_rejection_matrix(raw):
     with pytest.raises(ConfigError):
         validate_config(raw)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://model.internal.example/generate",  # internal DNS name
+        "http://10.8.0.5:8080/generate",  # RFC1918 (private, allowed on GCP)
+        "https://evil-resident-model.run.app/generate",  # Cloud Run host
+    ],
+)
+def test_config_endpoint_allows_legitimate_gcp_targets(endpoint):
+    cfg = validate_config(
+        {"version": 1, "mode": "live", "model_endpoint": endpoint}
+    )
+    assert cfg.model_endpoint == endpoint
 
 
 def test_load_config_roundtrip(tmp_path):
@@ -218,6 +340,20 @@ def test_egress_check_fails_on_leak():
 def test_egress_check_empty_targets_vacuous():
     r = check_egress_containment(MockEgressChecker(), ())
     assert r.passed is True and "vacuously" in r.summary
+
+
+class _InconclusiveChecker(EgressChecker):
+    """Returns an undetermined verdict for every destination."""
+
+    def attempt(self, destination):
+        return EgressResult(destination, blocked=False, inconclusive=True,
+                            detail="stub: undetermined")
+
+
+def test_egress_check_fails_closed_on_inconclusive():
+    # A probe that cannot determine containment must FAIL the check, never pass.
+    r = check_egress_containment(_InconclusiveChecker(), ("a:443", "b:80"))
+    assert r.passed is False and "INCONCLUSIVE" in r.summary
 
 
 def test_guardrail_check_passes_on_expected_behavior():

@@ -12,12 +12,18 @@ Sentinel reasons about two strictly distinct, independently-failing boundaries
 They are separate abstractions on purpose: the two boundaries fail
 independently, so conflating them would be a design error.
 
+Deployment target is Google Cloud: the live egress checker is meant to run from
+a GCE/GKE vantage point inside the enclave's VPC, so its outbound attempts face
+the same VPC firewall / Cloud NAT rules a real escaping process would.
+
 Implementation posture (MOCK-ONLY build):
   - Mock* : real, working, deterministic. Exercised by the test suite.
   - Live* : genuine stdlib-only code that WOULD work against a real target.
-            Marked "LIVE —", requires a real Evil Resident deployment, and is
-            NEVER exercised by the tests. Present so the shape is proven and the
-            mock -> live switch is a config change, not a re-architecture.
+            Marked "LIVE —" and requires a real Evil Resident deployment. Never
+            pointed at a real target by the tests; its verdict mapping and input
+            handling ARE covered offline via injected stdlib fakes. Present so
+            the shape is proven and the mock -> live switch is a config change,
+            not a re-architecture.
 """
 
 from __future__ import annotations
@@ -46,11 +52,20 @@ class EgressResult:
     ``blocked`` is the verifier's verdict for this destination:
       - True  -> the attempt was blocked: egress containment HELD (good).
       - False -> the attempt succeeded: egress LEAKED (containment failed, bad).
+
+    ``inconclusive`` is the THIRD state, and it is the safety-critical one. A
+    verifier must never report "contained" when it merely failed to *determine*
+    containment. When the probe could not resolve the host, had no usable network
+    of its own, or got an ambiguous rejection, ``inconclusive=True`` and
+    ``blocked`` is forced to ``False`` so no caller can mistake a non-answer for a
+    pass. ``check_egress_containment`` treats an inconclusive target as a check
+    FAILURE (fail-closed), not a silent success.
     """
 
     destination: str
     blocked: bool
     detail: str = ""
+    inconclusive: bool = False
 
 
 class EgressChecker(ABC):
@@ -122,15 +137,34 @@ class MockModelClient(ModelClient):
 
 
 # --------------------------------------------------------------------------- #
-# Live implementations — LIVE: require a real target. NEVER exercised in tests #
+# Live implementations — LIVE: require a real target. Tests drive their logic   #
+# offline via injected stdlib fakes; they never hit a real target.              #
 # --------------------------------------------------------------------------- #
 class LiveEgressChecker(EgressChecker):
     """LIVE — requires a real vantage point adjacent to the enclave.
 
     Written but UNEXERCISED in tests (there is no deployed target). Uses only
-    the standard library. A successful TCP connection means egress reached the
-    destination => containment LEAKED (blocked=False). A failed connection
-    (refused/timeout/unreachable) means containment HELD (blocked=True).
+    the standard library.
+
+    Verdict mapping (this is a security verifier, so we are deliberately strict
+    about what counts as "contained"):
+
+      - connect SUCCEEDS         -> egress reached the destination: LEAK
+                                    (blocked=False).
+      - connection TIMED OUT     -> the SYN was silently dropped, which is the
+                                    positive signature of a sealing firewall:
+                                    containment HELD (blocked=True).
+      - connection REFUSED       -> a RST came back. We cannot tell a denying
+                                    firewall (contained) from the real host
+                                    rejecting the port (the packet reached it).
+                                    INCONCLUSIVE, never a pass.
+      - DNS failure / other OSError (ENETUNREACH, EHOSTUNREACH, no local route)
+                                 -> may mean containment OR a broken probe host.
+                                    INCONCLUSIVE, never a pass.
+
+    The previous design mapped *every* failure to blocked=True, so a probe with
+    broken DNS or no network of its own reported the enclave as sealed. That is
+    the exact false-pass a verifier must not produce; hence the tri-state.
     """
 
     def __init__(self, timeout: float = 3.0):
@@ -146,13 +180,38 @@ class LiveEgressChecker(EgressChecker):
                 return EgressResult(
                     destination=destination,
                     blocked=False,
-                    detail="live: connection succeeded (egress reachable)",
+                    detail="live: connection succeeded (egress reachable — LEAK)",
                 )
-        except OSError as exc:
+        except (TimeoutError, socket.timeout) as exc:
+            # Silent drop: positive evidence of a sealing firewall.
             return EgressResult(
                 destination=destination,
                 blocked=True,
-                detail=f"live: connection failed ({exc})",
+                detail=f"live: connection timed out (egress appears contained) ({exc})",
+            )
+        except ConnectionRefusedError as exc:
+            # RST returned: cannot distinguish firewall-reject from host-reject.
+            return EgressResult(
+                destination=destination,
+                blocked=False,
+                inconclusive=True,
+                detail=f"live: connection refused — ambiguous, INCONCLUSIVE ({exc})",
+            )
+        except socket.gaierror as exc:
+            # Could not even resolve: the probe determined nothing.
+            return EgressResult(
+                destination=destination,
+                blocked=False,
+                inconclusive=True,
+                detail=f"live: DNS resolution failed — INCONCLUSIVE ({exc})",
+            )
+        except OSError as exc:
+            # ENETUNREACH/EHOSTUNREACH/etc: could be containment or a broken probe.
+            return EgressResult(
+                destination=destination,
+                blocked=False,
+                inconclusive=True,
+                detail=f"live: connection error — INCONCLUSIVE ({exc})",
             )
 
 
@@ -162,7 +221,17 @@ class LiveModelClient(ModelClient):
     Written but UNEXERCISED in tests. Uses only the standard library. Assumes a
     JSON endpoint accepting ``{"prompt": ...}`` and returning ``{"output": ...}``;
     adjust to the real surface's contract once it exists.
+
+    The endpoint is, by Sentinel's own threat model, UNTRUSTED (it is the thing
+    being verified, and may be compromised). So the response is treated as hostile
+    input: the read is size-capped to avoid a memory-exhaustion DoS from an
+    oversized body, and ``output`` is type-checked before it is returned to the
+    guardrail. Endpoint URLs are additionally vetted by ``config._validate_endpoint``
+    (no metadata/loopback/link-local SSRF targets, no embedded credentials).
     """
+
+    # 1 MiB cap on an untrusted model response body.
+    MAX_RESPONSE_BYTES = 1 << 20
 
     def __init__(self, endpoint: str, timeout: float = 30.0):
         self._endpoint = endpoint
@@ -172,6 +241,11 @@ class LiveModelClient(ModelClient):
         import json
         import urllib.request
 
+        # NOTE (required before going live): this sends only Content-Type and NO
+        # credential. A GCP-protected model surface (IAP, internal load balancer,
+        # Cloud Run + IAM) will reject unauthenticated requests — you must attach
+        # an identity token here, e.g. headers["Authorization"] = f"Bearer {token}",
+        # and add a config field / token source to supply it. Not yet implemented.
         body = json.dumps({"prompt": prompt}).encode("utf-8")
         req = urllib.request.Request(
             self._endpoint,
@@ -180,5 +254,17 @@ class LiveModelClient(ModelClient):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        return payload.get("output", "")
+            # Read one byte past the cap so we can detect an over-size response
+            # without buffering an unbounded body.
+            raw = resp.read(self.MAX_RESPONSE_BYTES + 1)
+        if len(raw) > self.MAX_RESPONSE_BYTES:
+            raise ValueError(
+                f"model response exceeds {self.MAX_RESPONSE_BYTES}-byte cap"
+            )
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("model response must be a JSON object")
+        output = payload.get("output", "")
+        if not isinstance(output, str):
+            raise ValueError("model response 'output' must be a string")
+        return output

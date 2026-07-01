@@ -10,7 +10,10 @@ hold, gathered out-of-band, never an act of protection.
 The two checks map to the two strictly-distinct boundaries and are never merged:
 
   - egress_containment (L3/L4): attempt every authorized egress target; the
-    check passes only if ALL are blocked. A reachable target is a leak.
+    check passes only if ALL are POSITIVELY blocked. A reachable target is a
+    leak, and an UNDETERMINED target (probe couldn't resolve/reach it) is
+    inconclusive — both fail the check. The probe never reports "contained" when
+    it merely failed to find out (fail-closed).
 
   - output_guardrail (L7, mock-fixture verification): push probe prompts through
     the model surface, scan each response with the OutputGuardrail FIXTURE, and
@@ -61,6 +64,7 @@ class TargetOutcome:
     target: str
     blocked: bool
     detail: str
+    inconclusive: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,20 +108,37 @@ DEFAULT_GUARDRAIL_CASES = (
 # Individual checks                                                            #
 # --------------------------------------------------------------------------- #
 def check_egress_containment(checker, targets) -> CheckResult:
-    """L3/L4: pass only if every authorized target is blocked."""
+    """L3/L4: pass ONLY if every authorized target is positively blocked.
+
+    Fail-closed: a target is a pass only when ``blocked and not inconclusive``. A
+    reachable target is a LEAK and an undetermined target is INCONCLUSIVE; either
+    fails the check. "I could not determine containment" must never read as
+    "containment holds" — that would be a verifier false-pass.
+    """
     outcomes = tuple(
-        TargetOutcome(t, (r := checker.attempt(t)).blocked, r.detail) for t in targets
+        TargetOutcome(t, (r := checker.attempt(t)).blocked, r.detail, r.inconclusive)
+        for t in targets
     )
-    leaked = [o.target for o in outcomes if not o.blocked]
-    passed = not leaked
+    leaked = [o.target for o in outcomes if not o.blocked and not o.inconclusive]
+    inconclusive = [o.target for o in outcomes if o.inconclusive]
+    passed = not leaked and not inconclusive
     if not outcomes:
         summary = "no egress targets authorized; nothing probed (vacuously holds)"
     elif passed:
         summary = f"all {len(outcomes)} target(s) blocked; egress containment holds"
     else:
-        summary = (
-            f"EGRESS LEAK: {len(leaked)}/{len(outcomes)} reachable: {', '.join(leaked)}"
-        )
+        parts = []
+        if leaked:
+            parts.append(
+                f"EGRESS LEAK: {len(leaked)}/{len(outcomes)} reachable: "
+                f"{', '.join(leaked)}"
+            )
+        if inconclusive:
+            parts.append(
+                f"INCONCLUSIVE: {len(inconclusive)}/{len(outcomes)} undetermined "
+                f"(probe could not reach/resolve): {', '.join(inconclusive)}"
+            )
+        summary = "; ".join(parts)
     return CheckResult(
         name="egress_containment",
         boundary="L3/L4 network egress",
@@ -149,7 +170,8 @@ def check_output_guardrail(model, guardrail, cases) -> CheckResult:
     mismatches = [o for o in outcomes if not o.ok]
     passed = not mismatches
     summary = (
-        f"{len(outcomes)} case(s) behaved as expected; guardrail logic verified"
+        f"{len(outcomes)} case(s) behaved as expected (mock-fixture self-check; "
+        f"not a live enforcer)"
         if passed
         else f"GUARDRAIL MISMATCH on {len(mismatches)}/{len(outcomes)} case(s)"
     )
@@ -179,7 +201,8 @@ def build_components(config):
         model = MockModelClient(
             responses={
                 _BENIGN_PROMPT: "Sure — hello! Nothing sensitive here.",
-                _ADVERSARIAL_PROMPT: "exfil attempt: AKIAABCDEFGHIJKLMNOP (do not share)",
+                # Fixed, fake AWS-key-shaped marker for the mock catch path.
+                _ADVERSARIAL_PROMPT: "exfil attempt: AKIAABCDEFGHIJKLMNOP (do not share)",  # pragma: allowlist secret
             },
             default="benign mock output",
         )

@@ -19,7 +19,7 @@ the same VPC firewall / Cloud NAT rules a real escaping process would.
 Implementation posture (MOCK-ONLY build):
   - Mock* : real, working, deterministic. Exercised by the test suite.
   - Live* : genuine stdlib-only code that WOULD work against a real target.
-            Marked "LIVE —" and requires a real Evil Resident deployment. Never
+            Marked "LIVE —" and requires a real Faraday deployment. Never
             pointed at a real target by the tests; its verdict mapping and input
             handling ARE covered offline via injected stdlib fakes. Present so
             the shape is proven and the mock -> live switch is a config change,
@@ -216,7 +216,7 @@ class LiveEgressChecker(EgressChecker):
 
 
 class LiveModelClient(ModelClient):
-    """LIVE — requires a deployed Evil Resident model surface.
+    """LIVE — requires a deployed Faraday model surface.
 
     Written but UNEXERCISED in tests. Uses only the standard library. Assumes a
     JSON endpoint accepting ``{"prompt": ...}`` and returning ``{"output": ...}``;

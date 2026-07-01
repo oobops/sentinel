@@ -1,4 +1,4 @@
-"""Sentinel — an out-of-band boundary probe for the Evil Resident enclave.
+"""Sentinel — an out-of-band boundary probe for the Faraday enclave.
 
 Sentinel is a VERIFIER, not an ENFORCER. It runs periodically from *outside*
 the enclave and probes whether security controls hold. It is never in the live
